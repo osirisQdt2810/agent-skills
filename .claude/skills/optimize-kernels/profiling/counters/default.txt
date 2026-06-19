@@ -1,0 +1,22 @@
+# Default gfx942 (CDNA3 / MI300X) counter set for the optimize-kernels loop.
+#
+# These are CHOSEN to map one-to-one onto the bottleneck signals the digest
+# reasons about (profile_digest.bottleneck_hint), so collection and analysis
+# stay aligned. Add/trim only with a reason.
+#
+# rocprofv2 collects ONE PASS PER `pmc:` LINE and packing too many counters onto
+# one line silently yields NULLs — so each line below is a small group (<=4) and
+# the app is re-run once per line (multi-pass). Same multi-line rule applies to
+# rocprofv3 `-i`.
+#
+# Why each group:
+#   1. global memory traffic + whether the memory pipe is the bottleneck
+#      -> derives memory_bandwidth_GBps and the bandwidth-bound verdict.
+#   2. cache locality -> low L2/L1 hit rate flags poor blocking/reuse.
+#   3. compute utilization -> low VALUBusy => latency-bound; high => compute-bound.
+#   4. LDS health + occupancy -> bank conflicts and wave-level parallelism.
+
+pmc: FetchSize, WriteSize, MemUnitBusy, MemUnitStalled
+pmc: L2CacheHitRate, sL1dCacheHitRate, WriteUnitStalled
+pmc: VALUBusy, SALUBusy, VALUUtilization
+pmc: LDSBankConflict, ALUStalledByLDS, Wavefronts
