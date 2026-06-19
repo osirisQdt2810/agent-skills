@@ -54,20 +54,41 @@ Run this until `pass == true` or you hit `MAX_ITERS`:
 2. **Hypothesize.** Pick ONE concrete, motivated change likely to move the metric.
    Write down the rationale (one or two lines) before editing.
 3. **Act.** Apply the change to `EDIT_TARGET` only.
-4. **Measure.** Run `VERIFY_CMD` with `TARGET`. Read `RESULT_JSON`.
+4. **Measure.** First ensure the GPU is idle (see **GPU exclusivity** below) — if it stays
+   busy past the timeout, checkpoint and stop cleanly (resumable) instead of measuring on a
+   contended device. Then run `VERIFY_CMD` with `TARGET` and read `RESULT_JSON`.
 5. **Decide, then checkpoint.**
    - `pass == true` → stop, write `REPORT.md`, report success.
    - regressed vs best-so-far (or build/correctness broke) → **roll back** to the
      best-so-far snapshot, log why, try a different idea.
    - improved but not passing → keep it as the new best-so-far.
    Then write `STATE_JSON` **atomically** (temp file + rename): `{status, target, max_iters,
-   iters_done, best_metric, best_snapshot, last_hypothesis}`. The iteration is only
-   "committed" here — one interrupted before this point is simply retried on resume, never
-   lost or double-counted. `status` = `done` on pass, `stopped` at `MAX_ITERS`/give-up,
-   else `looping`.
+   iters_done, best_metric, best_snapshot, last_hypothesis, reason}` (`reason` optional). The
+   iteration is only "committed" here — one interrupted before this point is simply retried on
+   resume, never lost or double-counted. `status` = `done` on pass, `stopped` at
+   `MAX_ITERS`/give-up or an unmet precondition (e.g. `reason: "gpu_busy_timeout"`), else
+   `looping`.
 6. **Diagnose (if stuck).** If two iterations bring no improvement and `PROFILE_CMD`
    is set, run it and let the profile drive the next hypothesis.
 7. Loop.
+
+## GPU exclusivity (before every measurement)
+
+Timing/profiling numbers are only trustworthy on an **idle** GPU, so this applies to every
+runner that measures on the GPU. Before each measurement (`VERIFY_CMD`, `PROFILE_CMD`, and any
+baseline run):
+
+- **Detect busy:** another process is using the GPU — on this ROCm box, `rocm-smi --showpids`
+  lists a PID that isn't yours, or `rocm-smi --showmeminfo vram` shows VRAM in use
+  (VRAM% > 0) while you are idle. (Target the specific device id if the box has several GPUs.)
+- **If busy → do NOT measure.** Pause and poll **every 30s**, up to a **30-minute** timeout.
+  Use a non-blocking wait (a backgrounded `sleep 30` poll, or the Monitor tool) — never a
+  foreground spin. Log that you are waiting.
+- **Freed within 30 min →** resume measuring; the wait does NOT count as an iteration.
+- **Still busy at 30 min →** stop cleanly and resumably: checkpoint (`STATE_JSON`,
+  `status: "stopped"`, `reason: "gpu_busy_timeout"`), keep best-so-far intact, write
+  `REPORT.md` noting why, and tell the user to continue later with the runner's resume mode.
+  Never measure on a contended GPU.
 
 ## Guardrails (always on)
 
@@ -79,8 +100,10 @@ Run this until `pass == true` or you hit `MAX_ITERS`:
 - **Always keep a best-so-far.** Before each edit, snapshot `EDIT_TARGET`. Never
   let the working file end up worse than the best verified state.
 - **Respect `MAX_ITERS`.** Do not exceed it. Count build failures as iterations.
-- **No destructive / out-of-scope actions** (deleting unrelated files, touching
-  files outside `EDIT_TARGET`, network installs) without asking.
+- **Stay inside your sandbox; never delete the user's files.** Write only under
+  `ARTIFACTS_DIR` (plus `EDIT_TARGET`). Never delete, move, or overwrite anything outside it
+  — in particular never `CLAUDE.md`, `.claude/`, `.git/`, settings, or the user's source
+  tree. No network installs or other out-of-scope / destructive actions without asking.
 - **Be honest.** If you did not reach the target, say so plainly with the numbers.
 
 ## Artifacts (write under `ARTIFACTS_DIR`)

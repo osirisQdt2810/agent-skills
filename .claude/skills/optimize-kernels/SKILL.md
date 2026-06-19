@@ -71,13 +71,23 @@ Confirm your understanding of:
 
 ## Conventions (provenance split)
 
-- Original source lives in `optimize-kernels/<problem>/` — derive `<problem>` from the
-  directory holding the kernel. **It stays pristine: the loop never edits the user's
-  original kernel or harness; it works on copies/wrappers under `artifacts/`** (calibrate
-  step 3).
-- Everything you generate goes to `artifacts/<problem>/`: the **working kernel copy**
-  (`EDIT_TARGET` — the only file the loop edits), `verify.py`, `harness.py`, `profile/`,
-  `build/`, `runs/`, `result.json`, `autotune.json`, `<problem>.context.md`, `REPORT.md`.
+- **Original source** lives wherever the user points you — any path, e.g.
+  `optimize-kernels/<problem>/` or `src/<problem>/<kernel-folder>/`. Derive `<problem>` as a
+  short label from the kernel's folder name; the source location does NOT decide where
+  artifacts go. It stays pristine: the loop never edits the user's original kernel or
+  harness; it works on copies/wrappers under `artifacts/` (calibrate step 3).
+- **`artifacts/` is ALWAYS at the PROJECT ROOT** — the repo/working dir you launched
+  `/optimize-kernels` from. Resolve it once at calibrate (`git rev-parse --show-toplevel`,
+  fallback `pwd`) and use `<PROJECT_ROOT>/artifacts/<problem>/`. **Never** place it beside or
+  inside the source tree (not `src/<problem>/artifacts/`, not a subfolder of the kernel dir).
+  Everything you generate goes there: the **working kernel copy** (`EDIT_TARGET` — the only
+  file the loop edits), `verify.py`, `harness.py`, `profile/`, `build/`, `runs/`,
+  `result.json`, `autotune.json`, `<problem>.context.md`, `REPORT.md`.
+- **Stay in your sandbox.** Write only under `<PROJECT_ROOT>/artifacts/<problem>/` (plus the
+  working copy there). **Never delete, move, or overwrite anything outside it** — in
+  particular never touch `CLAUDE.md`, `.claude/`, `.git/`, settings, or the user's source
+  tree. You read the source and copy the kernel into artifacts; you never relocate or remove
+  the user's files.
 - This skill's own helper files are **bundled inside the skill**, split by concern:
   `profiling/` (counter collection + digest), `tuning/` (autotune sweep), `templates/`
   (harness starting point), `references/` (distilled idea docs).
@@ -312,7 +322,8 @@ Once Phase 2 is signed off, bind these and follow the engine:
 - `MAX_ITERS` = `$ARGUMENTS` (default `15`)
 - `PROFILE_CMD` = `python3 artifacts/<problem>/profile/profile.py` (always set — profiling
   is on by default; the wrapper writes `artifacts/<problem>/profile/digest.json`).
-- `ARTIFACTS_DIR` = `artifacts/<problem>/`
+- `ARTIFACTS_DIR` = `<PROJECT_ROOT>/artifacts/<problem>/` (project root resolved at calibrate;
+  artifacts NEVER nested in the source tree)
 - `RUN_CONTEXT` = the user's extra-context answer (may be empty)
 - `STATE_JSON` = `artifacts/<problem>/loop_state.json` (the resumable checkpoint; always set
   — this is what `--resume` reads)
