@@ -20,6 +20,7 @@ runner did not provide; if a required one is missing, stop and ask.
 | `PROFILE_CMD` | *(optional)* Command for deeper diagnostics. Empty ⇒ skip. |
 | `ARTIFACTS_DIR` | Where per-iteration logs, the best-so-far snapshot, and `REPORT.md` go. |
 | `RUN_CONTEXT` | *(optional)* Free-text note the user gave for THIS run. May be empty. |
+| `STATE_JSON` | *(optional)* Resumable checkpoint the loop writes each iteration. Default `ARTIFACTS_DIR/loop_state.json`. |
 
 ## The gate contract (non-negotiable)
 
@@ -40,18 +41,30 @@ The only source of truth for "did it work" is `RESULT_JSON`, written by `VERIFY_
 
 Run this until `pass == true` or you hit `MAX_ITERS`:
 
-1. **Understand.** On iteration 1, read `EDIT_TARGET`, the verify/harness code
-   (read-only), `RUN_CONTEXT`, and the runner's context file. State a baseline:
-   run `VERIFY_CMD` once unchanged to capture the starting `metrics`.
+0. **Resume check (first, every invocation).** If `STATE_JSON` exists and its `status` is
+   not `done`, you are RESUMING an interrupted run — do NOT restart from scratch. Restore
+   `EDIT_TARGET` from `ARTIFACTS_DIR/best/`, set the iteration counter to its `iters_done`,
+   append a `resumed` line to the log, and continue at step 2 with the remaining budget
+   (`MAX_ITERS - iters_done`, or the larger `MAX_ITERS` the runner passed). Do NOT re-baseline
+   or redo finished iterations. If `status == done`, the run already finished — report it,
+   don't loop.
+1. **Understand.** On iteration 1 *of a fresh run* (not a resume), read `EDIT_TARGET`, the
+   verify/harness code (read-only), `RUN_CONTEXT`, and the runner's context file. State a
+   baseline: run `VERIFY_CMD` once unchanged to capture the starting `metrics`.
 2. **Hypothesize.** Pick ONE concrete, motivated change likely to move the metric.
    Write down the rationale (one or two lines) before editing.
 3. **Act.** Apply the change to `EDIT_TARGET` only.
 4. **Measure.** Run `VERIFY_CMD` with `TARGET`. Read `RESULT_JSON`.
-5. **Decide.**
+5. **Decide, then checkpoint.**
    - `pass == true` → stop, write `REPORT.md`, report success.
    - regressed vs best-so-far (or build/correctness broke) → **roll back** to the
      best-so-far snapshot, log why, try a different idea.
    - improved but not passing → keep it as the new best-so-far.
+   Then write `STATE_JSON` **atomically** (temp file + rename): `{status, target, max_iters,
+   iters_done, best_metric, best_snapshot, last_hypothesis}`. The iteration is only
+   "committed" here — one interrupted before this point is simply retried on resume, never
+   lost or double-counted. `status` = `done` on pass, `stopped` at `MAX_ITERS`/give-up,
+   else `looping`.
 6. **Diagnose (if stuck).** If two iterations bring no improvement and `PROFILE_CMD`
    is set, run it and let the profile drive the next hypothesis.
 7. Loop.
@@ -75,6 +88,8 @@ Run this until `pass == true` or you hit `MAX_ITERS`:
 - Per iteration: append a line to `ARTIFACTS_DIR/log.md` —
   `iter N | hypothesis | key metrics | kept/rolled-back`.
 - `ARTIFACTS_DIR/best/` — copy of the best-so-far `EDIT_TARGET` + its `result.json`.
+- `STATE_JSON` (default `ARTIFACTS_DIR/loop_state.json`) — the resumable checkpoint from
+  step 5, rewritten atomically each iteration so a fresh session or account can resume.
 - On exit (pass or give-up): write `ARTIFACTS_DIR/REPORT.md` with: starting vs
   final metrics, what worked / what didn't, the diff that won, and (if not passed)
   the best result reached + concrete next ideas.

@@ -43,29 +43,33 @@ directory `.claude/skills/<name>/SKILL.md`; the shared engine is a plain include
    the runner drives it automatically. It runs a one-time **calibrate phase** (read +
    correct + validate the source, generate the verify adapter + the agent-controlled
    `harness.py` + profiling + per-problem context, capture a baseline, get sign-off) and
-   then runs the loop. A runner **bundles its own helper scripts inside the skill dir**
-   (e.g. [.claude/skills/optimize-kernels/profiling/](.claude/skills/optimize-kernels/profiling/)),
-   invoked at runtime via `${CLAUDE_SKILL_DIR}/...`.
+   then runs the loop. A runner **bundles its own helper files inside the skill dir**, split
+   by concern — `profiling/` (counters + digest), `tuning/` (autotune), `templates/`, and
+   `references/` (distilled idea docs, e.g.
+   [optimize-kernels/references/](.claude/skills/optimize-kernels/references/)) — invoked at
+   runtime via `${CLAUDE_SKILL_DIR}/...`.
 
 ## Conventions
 
 **Provenance split** — every file has a clear owner:
 - `<source-dir>/<problem>/` (e.g. `optimize-kernels/<problem>/`) = **original source**
-  (the user's): the file under optimization + its measurement harness. **During the loop**
-  the agent may edit **only the designated target file**; the harness is frozen. *Before*
-  the loop (calibrate), the agent may correct genuine bugs in the original — kernel or
-  harness — with approval, then freeze it (see "correct-first" below).
-- `artifacts/<problem>/` = **everything Claude generates**: `verify.py` (the gate adapter),
-  `harness.py` (the agent-controlled measurement wrapper), `profile/`, `build/`, `runs/`,
-  `result.json`, `autotune.json`, `<problem>.context.md`, `REPORT.md`.
+  (the user's): the file(s) under test + their measurement harness. How the loop treats them
+  — edit in place vs keep pristine and work on a copy — is the **runner's** choice.
+- `artifacts/<problem>/` = **everything Claude generates** (owner: Claude). For
+  optimize-kernels that's the working kernel copy the loop edits, `verify.py` (gate adapter),
+  `harness.py` (measurement wrapper), `profile/`, `build/`, `runs/`, `result.json`,
+  `autotune.json`, `<problem>.context.md`, `REPORT.md`.
 - `.claude/` = the goal-loop machinery: the engine (`.claude/engine/`), the runner skills
-  (`.claude/skills/<name>/SKILL.md`) **with their own bundled helper scripts** (e.g.
-  `.claude/skills/optimize-kernels/profiling/`), and settings. No per-problem source, no artifacts.
+  (`.claude/skills/<name>/SKILL.md`) **with their own bundled helper files** split by concern
+  (e.g. optimize-kernels: `profiling/`, `tuning/`, `templates/`, `references/`), and settings.
+  No per-problem source, no artifacts.
 
-**Correct-first, then freeze** — the original source can be wrong (the kernel AND its
-harness). If so, the agent fixes it to be correct *during calibrate, with approval*, so the
-baseline measures something real. Thereafter the original harness is frozen: the autonomous
-loop never edits it, and controls measurement through the generated `harness.py` instead.
+**Correct-first, then freeze the gate** — before looping, make the thing being measured
+correct (fix genuine bugs in the gate/measurement at calibrate, with approval) and then
+**freeze it**, so the loop can't change what "success" means. *How each runner protects the
+user's source is runner-specific* — e.g. optimize-kernels keeps the original kernel + harness
+pristine and has the loop edit a copy in `artifacts/` (details in its
+[SKILL.md](.claude/skills/optimize-kernels/SKILL.md)).
 
 **Gate contract** — `result.json = {pass, metrics, summary}`. `pass` is the only success
 signal. The verify adapter *drives* the original harness; it never reimplements the metric.
@@ -73,6 +77,13 @@ signal. The verify adapter *drives* the original harness; it never reimplements 
 **Guardrails (in the engine, always on)** — edit only the target file; snapshot and keep a
 best-so-far; roll back on regression; correctness before speed; respect `max-iters`; never
 touch the measurement/harness/baseline; report honestly with numbers.
+
+**Resumable across sessions** — the engine checkpoints to disk every iteration
+(`loop_state.json` + `best/`), and only "commits" an iteration once the gate result is
+written, so an interrupted one is retried, not lost. A run therefore survives a
+session/budget window (even an account switch); continue it from disk with the runner's
+resume mode (e.g. `/optimize-kernels --resume`), which skips calibrate and picks up from
+the checkpoint.
 
 ## What the user provides
 
@@ -88,6 +99,9 @@ touch the measurement/harness/baseline; report honestly with numbers.
 - `/loop-tasks` — interview to generate a new runner skill for a task type.
 - `/optimize-kernels [max-iters]` — run the kernel-optimization goal loop (it asks for the
   rest of its inputs).
+- `/optimize-kernels --resume [problem] [max-iters]` — continue an interrupted run from its
+  on-disk checkpoint instead of starting a new one (survives session/budget windows and even
+  account switches; reads only `artifacts/`).
 
 ## Permissions
 
@@ -100,8 +114,12 @@ touch the measurement/harness/baseline; report honestly with numbers.
 
 ## Environment
 
-- Runs **inside a Docker container** (see [docker.sh](docker.sh)) on an AMD **MI300X** box,
-  arch **gfx942** (CDNA3), ROCm 7.2, with `hipcc`, hipBLAS, `rocprofv2`, and `rocprofv3` (1.1.0).
+- Runs **inside a Docker container** on an AMD **ROCm** box (ROCm ~7.2) with `hipcc`,
+  hipBLAS, `rocprofv2`, `rocprofv3` (1.1.0), `rocm_agent_enumerator`, and `rocminfo`. The
+  **GPU arch is not fixed** — it may be CDNA2 (`gfx90a`), CDNA3 (`gfx942`, MI300X), or CDNA4
+  (`gfx950`, MI350/MI355). The runner **detects it at calibrate** and builds with
+  `--offload-arch=<detected>`; counter sets are validated per arch. (Earlier end-to-end
+  validation was on `gfx942`.)
 - `~/.claude` is bind-mounted host→container, so Claude Code sessions/history/config are
   shared between host and container (sessions are local files keyed by `$HOME` + cwd, not by
   account).
@@ -116,14 +134,17 @@ touch the measurement/harness/baseline; report honestly with numbers.
   work.
 - A worked example problem lives under `optimize-kernels/` + `artifacts/` (kept as a
   reference of the layout and outputs).
-- **Tasks 1–3 below are DONE.** The skill now carries its own profiling/tuning library at
-  [.claude/skills/optimize-kernels/profiling/](.claude/skills/optimize-kernels/profiling/)
-  (`profile_digest.py` shared digest, `merge_v2.py`, `rocprofv3_digest.py`, `autotune.py`,
-  curated `counters/default.txt`, `templates/harness_template.py`), unit-tested without a GPU.
-  Profiling is now **always-on and self-driven** (no profile input), and the runner generates
-  a `harness.py` alongside `verify.py`. The repo-root reference tooling
-  ([merge.py](merge.py), [metrics/](metrics/), [profile_rocprofv*.sh](profile_rocprofv2.sh))
-  is the user's original and is left untouched.
+- **Tasks 1–3 below are DONE.** The skill carries its own helper library, **split by
+  concern** under [.claude/skills/optimize-kernels/](.claude/skills/optimize-kernels/):
+  `profiling/` (`profile_digest.py` shared digest, `merge_v2.py`, `rocprofv3_digest.py`,
+  curated `counters/default.txt`), `tuning/` (`autotune.py`), `templates/`
+  (`harness_template.py`), and `references/` (`amd-techniques.md` — distilled, arch-tagged
+  AMD/CDNA **idea menu**). Unit-tested without a GPU. Profiling is **always-on and
+  self-driven** (no profile input); the runner generates a `harness.py` alongside
+  `verify.py`; arch is **detected at calibrate** (CDNA2/3/4) and every AMD hint is
+  arch-tagged + bottleneck-gated. The repo-root reference tooling ([merge.py](merge.py),
+  `profile_rocprofv2.sh`, `profile_rocprofv3.sh`) is the user's original and is left
+  untouched.
 
 ## Done — Tasks 1–3 (kept for context)
 
