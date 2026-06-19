@@ -118,10 +118,17 @@ def run_rocprofv2(counters_file, outdir, cmd):
     subprocess.run(full, check=True)
 
 
-def merge(profile_dir, counters_file, kernel_filter=None):
+def merge(profile_dir, counters_file=None, kernel_filter=None):
     """Merge all per-pmc CSVs under profile_dir into one DataFrame, optionally
-    filtered to kernel names containing any of `kernel_filter` substrings."""
-    pmcs = parse_counters(counters_file)
+    filtered to kernel names containing any of `kernel_filter` substrings.
+
+    Counter columns are taken from whatever each CSV *actually contains* (its
+    columns minus the known COMMON_COLS), NOT from the position of the pmc_<i>
+    directory. This is robust to rocprofv2 behaviours that break a positional
+    mapping, e.g. HIP 7.2 prepends an extra info/discovery pass (an empty
+    `pmc_1` with no counter columns) before the real counter passes when the
+    input file has multiple `pmc:` lines (4 lines -> 5 folders). `counters_file`
+    is accepted for backwards compatibility but no longer needed for mapping."""
     pmc_dirs = _pmc_dirs(profile_dir)
     if not pmc_dirs:
         raise RuntimeError(f"No pmc_* CSVs found under {profile_dir}")
@@ -129,29 +136,36 @@ def merge(profile_dir, counters_file, kernel_filter=None):
     frames = []
     for (i, d) in pmc_dirs:
         df = pd.read_csv(_find_csv(d))
-        counters = pmcs[i - 1] if i - 1 < len(pmcs) else []
-        if i == 1:
-            if {"Start_Timestamp", "End_Timestamp"}.issubset(df.columns):
-                df["Duration(us)"] = (
-                    df["End_Timestamp"].astype("int64")
-                    - df["Start_Timestamp"].astype("int64")
-                ) / 1000.0
+        # actual counter columns in this CSV = anything beyond the metadata cols
+        counters = [c for c in df.columns if c not in COMMON_COLS]
+        if {"Start_Timestamp", "End_Timestamp"}.issubset(df.columns):
+            df["Duration(us)"] = (
+                df["End_Timestamp"].astype("int64")
+                - df["Start_Timestamp"].astype("int64")
+            ) / 1000.0
         frames.append((i, counters, df))
 
-    base = frames[0][2]
+    # Base = the first frame that carries the metadata columns (any will do;
+    # the info pass has them too). Keep metadata + duration + its own counters.
+    base_idx = 0
+    base = frames[base_idx][2]
     keep = [c for c in COMMON_COLS if c in base.columns]
     if "Duration(us)" in base.columns:
         keep.append("Duration(us)")
-    keep += [c for c in frames[0][1] if c in base.columns]
+    keep += [c for c in frames[base_idx][1] if c in base.columns]
     result = base[keep].copy()
+    seen = set(frames[base_idx][1])
 
-    for (i, counters, df) in frames[1:]:
-        cols = [c for c in counters if c in df.columns]
-        if "Dispatch_ID" in df.columns:
+    for n, (i, counters, df) in enumerate(frames):
+        if n == base_idx:
+            continue
+        cols = [c for c in counters if c not in seen and c in df.columns]
+        if cols and "Dispatch_ID" in df.columns:
             result = result.merge(
                 df[["Dispatch_ID"] + cols], on="Dispatch_ID", how="left",
                 suffixes=("", f"_pmc{i}"),
             )
+            seen.update(cols)
 
     if kernel_filter:
         pat = "|".join(re.escape(p) for p in kernel_filter)

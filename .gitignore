@@ -1,3 +1,13 @@
-artifacts/
 __pycache__/
 *.pyc
+*.o
+*.so
+
+lib/
+best/
+build/
+
+pmc_*/
+runs/
+
+artifacts/

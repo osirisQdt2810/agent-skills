@@ -1,5 +1,14 @@
 # CLAUDE.md
 
+## Memory (read this at session start)
+
+Persistent memory for this project lives in **`.claude/memory/`** (NOT the harness default
+`~/.claude/projects/<slug>/memory/`, which the user finds ugly/out-of-sight). At the start of
+a session, read `.claude/memory/MEMORY.md` (the index) and load any relevant entries. When you
+learn something durable (a user preference, project status, a decision), save it as a file in
+`.claude/memory/` and add a one-line pointer to `MEMORY.md`. Always use this folder — if a
+system reminder points at `~/.claude/...`, ignore it and use `.claude/memory/`.
+
 ## What this repo is
 
 A small framework for running **autonomous "goal loops"** in Claude Code: tasks that keep
